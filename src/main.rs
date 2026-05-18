@@ -1,4 +1,5 @@
 mod lexer;
+use lexer::Lexer;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -6,5 +7,8 @@ fn main() {
         eprintln!("needs a path");
         return;
     }
-    let fileData = std::fs::read_to_string(args[0].clone()).expect("Failed to read file");
+    let file_data = std::fs::read_to_string(&args[1].clone()).expect("Failed to read file");
+    let mut lexer = Lexer::new(file_data);
+    let out = lexer.tokenize();
+    println!("Output:\n{:#?}", out)
 }

@@ -1,5 +1,6 @@
 use std::{char, vec};
 
+#[derive(Debug)]
 pub enum TokenKind {
     RepOpen,
     IfOpen,
@@ -8,6 +9,7 @@ pub enum TokenKind {
     Block(BlockType, String, String, Vec<Expr>)
 }
 
+#[derive(Debug)]
 pub enum BlockType {
     Control,
     Select,
@@ -25,6 +27,7 @@ pub enum BlockType {
     Entity,
 }
 
+#[derive(Debug)]
 pub enum ValType {
     Str,
     Num,
@@ -35,12 +38,14 @@ pub enum ValType {
     Dict(Vec<String>, Vec<ValType>),
 }
 
+#[derive(Debug)]
 pub struct Struct {
     data_names: Vec<String>,
     data_types: Vec<ValType>,
     impls: Vec<Vec<Token>>
 }
 
+#[derive(Debug)]
 pub enum VarScope {
     Game,
     Save,
@@ -48,6 +53,7 @@ pub enum VarScope {
     Line
 }
 
+#[derive(Debug)]
 pub enum Expr {
     Str(String),
     Num(f64),
@@ -58,12 +64,14 @@ pub enum Expr {
     Vect(f64, f64, f64)
 }
 
+#[derive(Debug)]
 pub struct Token {
     kind: TokenKind,
     line: usize,
     col: usize
 }
 
+#[derive(Debug)]
 enum BracketKind {
     Rep,
     If
@@ -92,6 +100,7 @@ pub struct Lexer {
     col: usize
 }
 
+#[derive(Debug)]
 pub struct LexError {
     pub msg: String,
     pub line: usize,
@@ -117,6 +126,7 @@ impl Lexer {
             }
             _ => {}
         };
+        self.pos += 1;
         ch
     }
     fn make_token(&self, kind: TokenKind) -> Token {
@@ -159,8 +169,12 @@ impl Lexer {
         let col = self.col;
         let mut ident;
         ident = String::new();
-        while matches!(self.peek(), Some(c) if c.is_alphabetic() || c=='.' || c=='/' || c=='-' || c=='+' || c=='=' || c=='%') {
-            ident.push(self.advance().unwrap());
+        while matches!(self.peek(), Some(c) if c.is_alphabetic()) {
+            let ch = match self.advance() {
+                Some(t) => t,
+                None => ' '
+            };
+            ident.push(ch);
         };
         match self.peek() {
             None => {return Err(LexError { msg: "unconcluded line".to_string(), line:line, col:col });}
@@ -197,18 +211,18 @@ impl Lexer {
             }
             "e" => BlockType::Entity,
             _ => {
-                eprintln!("Invalid block type: \"{}\"", ident);
-                panic!();
+                return Err(LexError { msg: std::fmt::format(format_args!("invalid block type: {}", ident)), line, col });
             }
         };
         self.advance();
+        ident = String::new();
         if matches!(self.peek(), Some('"')) {
             ident = match self.lex_string() {
                 Err(e) => {return Err(e);}
                 Ok(t) => t
             }
         } else {
-            while matches!(self.peek(), Some(c) if c.is_alphabetic()) {
+            while matches!(self.peek(), Some(c) if c.is_alphabetic() || c=='.' || c=='/' || c=='-' || c=='+' || c=='=' || c=='%' || c=='!') {
                 ident.push(self.advance().unwrap());
             };
         };
@@ -216,15 +230,15 @@ impl Lexer {
         if matches!(self.peek(), Some(' ')) {
             self.advance();
             loop {
-                match self.advance() {
+                match self.peek() {
                     None => {return Err(LexError { msg: "Unconcluded line".to_string(), line, col });}
-                    Some(c) if c.is_alphabetic() => {
+                    Some(c) if c.is_alphabetic() || c=='.' || c=='/' || c=='-' || c=='+' || c=='=' || c=='%' || c=='!' => {
                         sub.push(c);
+                        self.advance();
                     }
                     Some(_) => {break;}
                 };
             };
-            self.advance();
         };
         let mut args: Vec<Expr> = Vec::new();
         if matches!(self.peek(), Some('(')) {
@@ -253,13 +267,23 @@ impl Lexer {
                 }
                 Some('!') => {
                     self.advance();
-                    exprs.push(Expr::Str(match self.lex_string() {
+                    exprs.push(Expr::STxt(match self.lex_string() {
+                        Ok(t) => t,
+                        Err(e) => {return Err(e);}
+                    }));
+                }
+                Some('#') => {
+                    self.advance();
+                    exprs.push(Expr::NumExpr(match self.lex_string() {
                         Ok(t) => t,
                         Err(e) => {return Err(e);}
                     }));
                 }
                 Some(')') => {break;}
-                Some(c) if c.is_numeric() => {}
+                Some(c) if c.is_numeric() => {
+                    self.advance();
+                    exprs.push(Expr::Num(self.lex_number()));
+                }
                 Some('-') if match self.peek_ahead(1) {
                     None => {return Err(LexError { msg: "arguments are never closed".to_string(), line: m_line, col: m_col });}
                     Some(t) => t
@@ -291,6 +315,19 @@ impl Lexer {
                         Ok(t) => t
                     });
                 }
+                Some('[') => {
+                    exprs.push(match self.lex_loc() {
+                        Err(e) => {return Err(e);}
+                        Ok(t) => t
+                    });
+                    self.advance();
+                }
+                Some('<') => {
+                    exprs.push(match self.lex_vec() {
+                        Err(e) => {return Err(e);}
+                        Ok(t) => t
+                    });
+                }
                 Some(_) => {self.advance();}
             };
         };
@@ -313,8 +350,7 @@ impl Lexer {
                     self.advance();
                     match self.advance() {
                         None => {
-                            eprintln!("string is never closed");
-                            panic!();
+                            return Err(LexError { msg: "string is never closed".to_string(), line: m_line, col: m_col });
                         }
                         Some('n') => {str.push('\n');}
                         Some(c) => {
@@ -324,6 +360,7 @@ impl Lexer {
                 }
                 Some(s) => {
                     str.push(s);
+                    self.advance();
                 }
             };
         };
@@ -377,5 +414,51 @@ impl Lexer {
                 return Ok(Expr::Var(scope, name));
             }
         };
+    }
+    fn lex_loc(&mut self) -> Result<Expr, LexError> {
+        let m_line = self.line;
+        let m_col = self.col;
+        self.advance();
+        let mut axis = [0.; 5];
+        let mut index = 0;
+        loop {
+            match self.peek() {
+                None => {return Err(LexError { msg: "unconcluded location".to_string(), line: m_line, col: m_col });}
+                Some(']') => {break ;}
+                Some(c) if c.is_numeric() => {
+                    axis[index] = self.lex_number();
+                    self.advance();
+                    index += 1;
+                    if index<4 {
+                        return Err(LexError { msg: "locations only have 5 values".to_string(), line: m_line, col: m_col });
+                    }
+                }
+                Some(_) => {self.advance();}
+            };
+        };
+        Ok(Expr::Loc(axis[0], axis[1], axis[2], axis[3], axis[4]))
+    }
+    fn lex_vec(&mut self) -> Result<Expr, LexError> {
+        let m_line = self.line;
+        let m_col = self.col;
+        self.advance();
+        let mut axis = [0.; 3];
+        let mut index = 0;
+        loop {
+            match self.peek() {
+                None => {return Err(LexError { msg: "unconcluded location".to_string(), line: m_line, col: m_col });}
+                Some('>') => {break;}
+                Some(c) if c.is_numeric() => {
+                    axis[index] = self.lex_number();
+                    self.advance();
+                    index += 1;
+                    if index<2 {
+                        return Err(LexError { msg: "vectors only have 3 values".to_string(), line: m_line, col: m_col });
+                    }
+                }
+                Some(_) => {self.advance();}
+            };
+        };
+        Ok(Expr::Vect(axis[0], axis[1], axis[2]))
     }
 }
