@@ -1,4 +1,0 @@
-loop While !=(i"Var", !"string"){
-    set =(iVar, !"string")
-    set +=(iIndex, #"%math(%var(Index)+1)")
-}
