@@ -1,115 +1,122 @@
-use std::{char, vec};
-
-#[derive(Debug)]
-pub enum TokenKind {
-    RepOpen,
-    IfOpen,
-    RepClose,
-    IfClose,
-    Block(BlockType, String, String, Vec<Expr>)
-}
-
-#[derive(Debug)]
-pub enum BlockType {
-    Control,
-    Select,
-    Repeat,
-    Else,
-    IfPlayer,
-    Player,
-    Call,
-    Set,
-    IfVar,
-    Game,
-    IfGame,
-    Start,
-    IfEntity,
-    Entity,
-}
-
-#[derive(Debug)]
-pub enum ValType {
-    Str,
-    Num,
-    STxt,
-    Loc,
-    Vec,
-    List(Box<ValType>),
-    Dict(Vec<String>, Vec<ValType>),
-}
-
-#[derive(Debug)]
-pub struct Struct {
-    data_names: Vec<String>,
-    data_types: Vec<ValType>,
-    impls: Vec<Vec<Token>>
-}
-
-#[derive(Debug)]
-pub enum VarScope {
-    Game,
-    Save,
-    Local,
-    Line
-}
-
-#[derive(Debug)]
-pub enum Expr {
-    Str(String),
-    Num(f64),
-    NumExpr(String),
-    Var(VarScope, String),
-    STxt(String),
-    Loc(f64, f64, f64, f64, f64),
-    Vect(f64, f64, f64)
-}
-
-#[derive(Debug)]
-pub struct Token {
-    kind: TokenKind,
-    line: usize,
-    col: usize
-}
-
-#[derive(Debug)]
-enum BracketKind {
-    Rep,
-    If
-}
-
-impl BracketKind {
-    pub fn open(&self) -> TokenKind {
-        match self {
-            BracketKind::If => TokenKind::IfOpen,
-            BracketKind::Rep => TokenKind::RepOpen
-        }
-    }
-    pub fn close(&self) -> TokenKind {
-        match self {
-            BracketKind::If => TokenKind::IfClose,
-            BracketKind::Rep => TokenKind::RepClose
-        }
-    }
-}
+use crate::lexer::TokenKind::{Identifier, Index};
 
 pub struct Lexer {
     source: Vec<char>,
     pos: usize,
-    bracket_type_stack: Vec<BracketKind>,
     line: usize,
     col: usize
 }
 
-#[derive(Debug)]
+pub enum TokenKind {
+    Identifier(String),
+
+    Assign,
+    AddAssign,
+    SubAssign,
+    MultAssign,
+    DivAssign,
+    
+    Index(Vec<ExprToken>),
+    Entry(String),
+
+    Call(Vec<Token>),
+
+    Extension(String),
+}
+
+pub enum ExprTokenKind {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+
+    StringLit(String),
+    NumLit(String),
+
+    Identifier(String),
+
+    Index(Vec<ExprToken>),
+    Entry(String),
+
+    Call(Vec<Token>),
+
+    Extension(String),
+}
+
+pub struct ExprToken {
+    kind: ExprTokenKind,
+    line: usize,
+    col: usize,
+}
+
+pub struct Token {
+    kind: TokenKind,
+    line: usize,
+    col: usize,
+}
+
+pub enum ParamType {
+    String,
+    Number,
+    List,
+    Dictionary,
+    Any,
+    Variable(Box<ParamType>),
+    Unknown(String),
+}
+
+pub enum ParamDefault {
+    String(String),
+    Number(String),
+    None,
+}
+
+pub enum StructValType {
+    String,
+    Number,
+    List(Box<StructValType>),
+    Dictionary(Vec<String>, Vec<StructValType>),
+}
+
+pub struct FunctionParam {
+    kind: ParamType,
+    name: String,
+    plural: bool,
+    optional: bool,
+    default: ParamDefault
+}
+
+pub struct Function {
+    toks: Vec<Token>,
+    args: Vec<FunctionParam>,
+    name: String,
+    line: usize,
+    col: usize
+}
+
+pub struct Struct {
+    name: String,
+    val_names: Vec<String>,
+    val_types: Vec<StructValType>,
+    impls: Vec<Function>,
+    line: usize,
+    col: usize
+}
+
+pub struct Lexed {
+    structs: Vec<Struct>,
+    funcs: Vec<Vec<Token>>
+}
+
 pub struct LexError {
-    pub msg: String,
-    pub line: usize,
-    pub col: usize
+    line: usize,
+    col: usize,
+    message: String
 }
 
 impl Lexer {
-    pub fn new(source: String) -> Self {
-        Lexer { source: source.chars().collect(), pos: 0, bracket_type_stack: vec![], line: 0, col: 0 }
+    pub fn new(source: &str) -> Self {
+        Lexer { source: source.chars().collect(), pos: 0, line: 1, col: 1 }
     }
     fn peek(&self) -> Option<char> {
         self.source.get(self.pos).copied()
@@ -119,346 +126,385 @@ impl Lexer {
     }
     fn advance(&mut self) -> Option<char> {
         let ch = self.source.get(self.pos).copied();
-        match ch {
-            Some('\n') => {
-                self.col = 1;
+        if let Some(c) = ch {
+            self.pos += 1;
+            if c == '\n' {
                 self.line += 1;
-            }
-            _ => {}
-        };
-        self.pos += 1;
-        ch
-    }
-    fn make_token(&self, kind: TokenKind) -> Token {
-        Token { kind: kind, line: self.line, col: self.col }
-    }
-    pub fn tokenize(&mut self) -> Result<Vec<Token>, LexError> {
-        let mut tokens = Vec::new();
-        loop {
-            match self.peek() {
-                None => {
-                    break;
-                }
-                Some('{') => {
-                    tokens.push(self.make_token(self.bracket_type_stack.last().unwrap().open()));
-                    self.advance();
-                }
-                Some('}') => {
-                    let append = match self.bracket_type_stack.pop() {
-                        Some(t) => t,
-                        None => {
-                            break;
-                        }
-                    };
-                    tokens.push(self.make_token(append.close()));
-                    self.advance();
-                }
-                Some(c) if c.is_alphabetic() => {
-                    match self.lex_block() {
-                        Result::Ok(t) => {tokens.push(t);}
-                        Result::Err(e) => {return Err(e);}
-                    };
-                }
-                Some(_) => {self.advance();}
+                self.col = 1;
+            } else {
+                self.col += 1;
             }
         }
-        Ok(tokens)
+        ch
     }
-    fn lex_block(&mut self) -> Result<Token,LexError> {
-        let line = self.line;
-        let col = self.col;
-        let mut ident;
-        ident = String::new();
-        while matches!(self.peek(), Some(c) if c.is_alphabetic()) {
-            let ch = match self.advance() {
-                Some(t) => t,
-                None => ' '
-            };
-            ident.push(ch);
-        };
-        match self.peek() {
-            None => {return Err(LexError { msg: "unconcluded line".to_string(), line:line, col:col });}
-            Some(_) => {}
-        };
-        let block: BlockType = match ident.as_str() {
-            "cont" => BlockType::Control,
-            "sel" => BlockType::Select,
-            "loop" => {
-                self.bracket_type_stack.push(BracketKind::Rep);
-                BlockType::Repeat
-            },
-            "else" => BlockType::Else,
-            "ifp" => {
-                self.bracket_type_stack.push(BracketKind::If);
-                BlockType::IfPlayer
-            }
-            "p" => BlockType::Player,
-            "call" => BlockType::Call,
-            "set" => BlockType::Set,
-            "ifv" => {
-                self.bracket_type_stack.push(BracketKind::If);
-                BlockType::IfVar
-            }
-            "game" => BlockType::Game,
-            "ifg" => {
-                self.bracket_type_stack.push(BracketKind::If);
-                BlockType::IfGame
-            }
-            "start" => BlockType::Start,
-            "ife" => {
-                self.bracket_type_stack.push(BracketKind::If);
-                BlockType::IfEntity
-            }
-            "e" => BlockType::Entity,
-            _ => {
-                return Err(LexError { msg: std::fmt::format(format_args!("invalid block type: {}", ident)), line, col });
-            }
-        };
-        self.advance();
-        ident = String::new();
-        if matches!(self.peek(), Some('"')) {
-            ident = match self.lex_string() {
-                Err(e) => {return Err(e);}
-                Ok(t) => t
-            }
-        } else {
-            while matches!(self.peek(), Some(c) if c.is_alphabetic() || c=='.' || c=='/' || c=='-' || c=='+' || c=='=' || c=='%' || c=='!') {
-                ident.push(self.advance().unwrap());
-            };
-        };
-        let mut sub = String::new();
-        if matches!(self.peek(), Some(' ')) {
-            self.advance();
+    pub fn main(&mut self) -> Result<Lexed, LexError> {
+        let mut structs: Vec<Struct> = Vec::new();
+        let mut funcs: Vec<Vec<Token>> = Vec::new();
+
+        loop {
+            let mut ident = String::new();
             loop {
                 match self.peek() {
-                    None => {return Err(LexError { msg: "Unconcluded line".to_string(), line, col });}
-                    Some(c) if c.is_alphabetic() || c=='.' || c=='/' || c=='-' || c=='+' || c=='=' || c=='%' || c=='!' => {
-                        sub.push(c);
+                    None => {return Ok(Lexed { structs, funcs });},
+                    Some(c) => {
+                        if c.is_whitespace() {
+                            break;
+                        }
+                    }
+                };
+                self.advance();
+            };
+
+            let m_line = self.line;
+            let m_col = self.col;
+
+            loop {
+                match self.peek() {
+                    None => {return Err(LexError { line: m_line, col: m_col, message: "Unconcluded Identifier or block declaration".to_string() });}
+                    Some(c) => {
+                        if c.is_whitespace() {
+                            break;
+                        }
+                    }
+                };
+                ident.push(self.peek().unwrap());
+                self.advance();
+            }
+
+            match ident {
+                _ => {return Err(LexError { line: m_line, col: m_col, message: "Unrecognized identifier".to_string() });}
+            };
+        };
+    }
+    fn lex_function(&mut self) -> Result<Function, LexError> {
+        while match self.peek() {
+            None => {return Err(LexError { line: self.line, col: self.col, message: "Expected something after `fn`".to_string() });}
+            Some(c) => c.is_alphabetic()
+        } {
+            self.advance();
+        };
+
+        let mut name = String::new();
+        while match self.peek() {
+            None => {return Err(LexError { line: self.line, col: self.col, message: "Expected a function definition".to_string() });}
+            Some(c) => c.is_alphabetic()
+        } {
+            name.push(self.peek().unwrap());
+            self.advance();
+        };
+
+        match self.peek() {
+            None => {return Err(LexError { line: self.line, col: self.col, message: "Expected opening parenthesis".to_string() });}
+            Some('(') => {self.advance()}
+            Some(_) =>{return Err(LexError { line: self.line, col: self.col, message: "Expected opening parenthesis".to_string() });}
+        };
+
+        let mut params: Vec<FunctionParam> = Vec::new();
+        let p_line = self.line;
+        let p_col = self.col;
+        loop {
+            match self.peek() {
+                None => {return Err(LexError { line: p_line, col: p_col, message: "Unconcluded parameters".to_string() });}
+                Some(c) if c.is_whitespace() => {self.advance(); continue;}
+                Some(')') => {self.advance(); break;}
+                Some(c) if c.is_alphabetic() => {}
+                Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in function parameters".to_string() });}
+            };
+            let mut name = String::new();
+            let t_line = self.line;
+            let t_col = self.col;
+            loop {
+                match self.peek() {
+                    None => {return Err(LexError { line: t_line, col: t_col, message: "Expected parameter type declaration".to_string() });}
+                    Some(c) if c.is_alphabetic() => {
+                        name.push(c);
                         self.advance();
                     }
-                    Some(_) => {break;}
+                    Some(':') => {self.advance(); break;}
+                    Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in function parameters".to_string() });}
                 };
             };
-        };
-        let mut args: Vec<Expr> = Vec::new();
-        if matches!(self.peek(), Some('(')) {
-            self.advance();
-            match self.lex_args() {
-                Err(e) => {return Err(e);}
-                Ok(t) => {args = t;}
+            loop {
+                match self.peek() {
+                    None => {return Err(LexError { line: self.line, col: self.col, message: "EOF is not a parameter type, and I am starting to get tired of coding all of these bizarre errors".to_string() });}
+                    Some(c) if c.is_whitespace() => {self.advance();}
+                    Some(c) if c.is_alphabetic() => {break;}
+                    Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in function parameters".to_string() });}
+                };
             };
+            let mut type_ident = String::new();
+            let mut plural = false;
+            let mut optional = false;
+            loop {
+                match self.peek() {
+                    None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded parameters".to_string() });}
+                    Some(c) if c.is_alphabetic() => {
+                        type_ident.push(c);
+                        self.advance();
+                    }
+                    Some(',') => {self.advance(); break;}
+                    Some(c) if c.is_whitespace() => {self.advance(); break;}
+                    Some('?') => {optional = true; self.advance();}
+                    Some('+') => {plural = true; self.advance();}
+                    Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in function parameters".to_string() });}
+                };
+            };
+            let mut default = ParamDefault::None;
+            if optional && !plural && type_ident != "Variable".to_string() && type_ident != "Var".to_string() {
+                loop {
+                    match self.peek() {
+                        None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded parameters".to_string() });}
+                        Some(c) if c.is_whitespace() => {self.advance();}
+                        Some('=') => {
+                            self.advance();
+                            default = match self.lex_param_default() {
+                                Err(e) => {return Err(e);}
+                                Ok(t) => t
+                            };
+                            break;
+                        }
+                        Some(c) if c.is_alphabetic() => {break;}
+                        Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in parameter declaration".to_string() });}
+                    };
+                };
+            }
+            params.push(FunctionParam { kind: match type_ident.as_str() {
+                "string" => ParamType::String,
+                "str" => ParamType::String,
+                "number" => ParamType::Number,
+                "num" => ParamType::Number,
+                "List" => ParamType::List,
+                "Dictionary" => ParamType::Dictionary,
+                "Dict" => ParamType::Dictionary,
+                "Any" => ParamType::Any,
+                "Variable"|"Var" => ParamType::Variable(Box::new(match self.lex_varto() {
+                    Err(e) => {return Err(e);}
+                    Ok(t) => t
+                })),
+                c => ParamType::Unknown(c.to_string())
+            }, name, plural, optional, default });
         };
-        Ok(Token { kind: TokenKind::Block(block, ident, sub, args), line: line, col: col })
-    }
-    fn lex_args(&mut self) -> Result<Vec<Expr>, LexError> {
-        let mut exprs = Vec::new();
-        let m_line = self.line;
-        let m_col = self.col;
         loop {
             match self.peek() {
-                None => {
-                    return Err(LexError { msg: "arguments are never closed".to_string(), line: m_line, col: m_col });
-                }
-                Some('"') => {
-                    exprs.push(Expr::Str(match self.lex_string() {
-                        Ok(t) => t,
-                        Err(e) => {return Err(e);}
-                    }));
-                }
-                Some('!') => {
-                    self.advance();
-                    exprs.push(Expr::STxt(match self.lex_string() {
-                        Ok(t) => t,
-                        Err(e) => {return Err(e);}
-                    }));
-                }
-                Some('#') => {
-                    self.advance();
-                    exprs.push(Expr::NumExpr(match self.lex_string() {
-                        Ok(t) => t,
-                        Err(e) => {return Err(e);}
-                    }));
-                }
-                Some(')') => {break;}
-                Some(c) if c.is_numeric() => {
-                    self.advance();
-                    exprs.push(Expr::Num(self.lex_number()));
-                }
-                Some('-') if match self.peek_ahead(1) {
-                    None => {return Err(LexError { msg: "arguments are never closed".to_string(), line: m_line, col: m_col });}
-                    Some(t) => t
-                }.is_numeric() => {
-                    self.advance();
-                    exprs.push(Expr::Num(-self.lex_number()));
-                }
-                Some('g') => {
-                    exprs.push(match self.lex_var(VarScope::Game) {
-                        Err(e) => {return Err(e);}
-                        Ok(t) => t
-                    });
-                }
-                Some('s') => {
-                    exprs.push(match self.lex_var(VarScope::Save) {
-                        Err(e) => {return Err(e);}
-                        Ok(t) => t
-                    });
-                }
-                Some('l') => {
-                    exprs.push(match self.lex_var(VarScope::Local) {
-                        Err(e) => {return Err(e);}
-                        Ok(t) => t
-                    });
-                }
-                Some('i') => {
-                    exprs.push(match self.lex_var(VarScope::Line) {
-                        Err(e) => {return Err(e);}
-                        Ok(t) => t
-                    });
+                None => {return Err(LexError { line: self.line, col: self.col, message: "Expected opening curly brace to begin function script".to_string() });}
+                Some(c) if c.is_whitespace() => {self.advance();}
+                Some('{') => {break;}
+                Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Expected opening curly brace to begin function script".to_string() });}
+            };
+        };
+        self.advance();
+        let mut toks: Vec<Token> = Vec::new();
+        loop {
+            let t_line = self.line;
+            let t_col = self.col;
+            match self.peek() {
+                None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded function".to_string() });}
+                Some(c) if c.is_whitespace() => {self.advance();}
+                Some(c) if c.is_alphabetic() => {
+                    toks.push(Token { kind: Identifier(self.lex_identifier()), line: t_line, col: t_col });
                 }
                 Some('[') => {
-                    exprs.push(match self.lex_loc() {
+                    toks.push(Token { kind: Index(match self.lex_index() {
                         Err(e) => {return Err(e);}
                         Ok(t) => t
-                    });
-                    self.advance();
+                    }), line: t_line, col: t_col });
                 }
-                Some('<') => {
-                    exprs.push(match self.lex_vec() {
-                        Err(e) => {return Err(e);}
-                        Ok(t) => t
-                    });
+
+                Some(_) => {
+                    return Err(LexError { line: t_line, col: t_col, message: "Unexpected character".to_string() });
                 }
-                Some(_) => {self.advance();}
             };
         };
-        Ok(exprs)
     }
-    fn lex_string(&mut self) -> Result<String, LexError> {
-        let mut str = String::new();
-        self.advance();
-        let m_line = self.line;
-        let m_col = self.col;
+    fn lex_varto(&mut self) -> Result<ParamType, LexError> {
         loop {
             match self.peek() {
-                None => {
-                    return Err(LexError { msg: "Unconcluded string".to_string(), line: m_line, col: m_col });
+                None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded parameters".to_string() });}
+                Some(c) if c.is_whitespace() => {self.advance();}
+                Some('-') => {break;}
+                Some(c) if c.is_alphabetic() => {return Ok(ParamType::Any);}
+                Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in parameter declaration".to_string() });}
+            };
+        };
+        if self.peek() != Some('>') {
+            return Err(LexError { line: self.line, col: self.col, message: "Expected \">\" to continue output type declaration".to_string() });
+        }
+        self.advance();
+        loop {
+            match self.peek() {
+                None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded parameters".to_string() });}
+                Some(c) if c.is_whitespace() => {self.advance();}
+                Some(c) if c.is_alphabetic() => {break;}
+                Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in parameter declaration".to_string() });}
+            };
+        };
+        let mut type_name = String::new();
+        loop {
+            match self.peek() {
+                None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded parameters".to_string() });}
+                Some(c) if c.is_alphabetic() => {
+                    type_name.push(c);
+                    self.advance();
                 }
+                Some(c) if c.is_whitespace() => {break;}
+                Some(',') => {
+                    self.advance();
+                    break;
+                }
+                Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in parameter declaration".to_string() });}
+            };
+        };
+        Ok(match type_name.as_str() {
+            "string" => ParamType::String,
+                "str" => ParamType::String,
+                "number" => ParamType::Number,
+                "num" => ParamType::Number,
+                "List" => ParamType::List,
+                "Dictionary" => ParamType::Dictionary,
+                "Dict" => ParamType::Dictionary,
+                "Any" => ParamType::Any,
+                c => ParamType::Unknown(c.to_string())
+        })
+    }
+    fn lex_param_default(&mut self) -> Result<ParamDefault, LexError> {
+        loop {
+            match self.peek() {
+                None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded parameters".to_string() });}
                 Some('"') => {
+                    return Ok(ParamDefault::String(match self.lex_string_lit() {
+                        Err(e) => {return Err(e);}
+                        Ok(t) => t
+                    }));
+                }
+                Some(c) if c.is_numeric() => {
+                    return Ok(ParamDefault::Number(self.lex_num_lit()));
+                }
+                Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character in parameter declaration".to_string() });}
+            };
+        };
+    }
+    fn lex_string_lit(&mut self) -> Result<String, LexError> {
+        self.advance();
+        let mut o = String::new();
+        loop {
+            match self.peek() {
+                None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded string".to_string() });}
+                Some('"') => {
+                    self.advance();
                     break;
                 }
                 Some('\\') => {
                     self.advance();
-                    match self.advance() {
-                        None => {
-                            return Err(LexError { msg: "string is never closed".to_string(), line: m_line, col: m_col });
-                        }
-                        Some('n') => {str.push('\n');}
-                        Some(c) => {
-                            str.push(c);
-                        }
-                    };
-                }
-                Some(s) => {
-                    str.push(s);
                     self.advance();
+                    match self.peek() {
+                        None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded parameters".to_string() });}
+                        Some('n') => {
+                            self.advance();
+                            o.push('\n');
+                        }
+                        Some(c) => {o.push(c);}
+                    }
                 }
+                Some(c) => {o.push(c);}
             };
         };
-        self.advance();
-        Ok(str)
+        Result::Ok(o)
     }
-    fn lex_number(&mut self) -> f64 {
-        let mut num: isize = 0;
-        let mut point: i32 = 0;
+    fn lex_num_lit(&mut self) -> String {
+        let mut o = String::new();
+        let mut point = true;
         loop {
             match self.peek() {
                 None => {break;}
                 Some(c) if c.is_numeric() => {
-                    num *= 10;
-                    point += 1;
-                    num += c.to_digit(10).expect("If this fires, something is very wrong") as isize;
+                    o.push(c);
+                    self.advance();
+                }
+                Some('.') if point => {
+                    point = !point;
+                    o.push('.');
+                }
+                Some(_) => {break;}
+            };
+        };
+        self.advance();
+        o
+    }
+    fn lex_identifier(&mut self) -> String {
+        let mut o = String::new();
+        loop {
+            match self.peek() {
+                None => {break;}
+                Some(c) if c.is_alphabetic() => {
+                    o.push(c);
+                    self.advance();
+                }
+                Some(_) => {break;}
+            };
+        };
+        self.advance();
+        o
+    }
+    fn lex_index(&mut self) -> Result<Vec<ExprToken>, LexError> {
+        self.advance();
+        let toks = self.lex_expr();
+        match self.peek() {
+            Some(']') => toks,
+            _ => Err(LexError { line: self.line, col: self.col, message: "Unconcluded index".to_string() })
+        }
+    }
+    fn lex_expr(&mut self) -> Result<Vec<ExprToken>, LexError> {
+        let mut toks: Vec<ExprToken> = Vec::new();
+        loop {
+            let t_line = self.line;
+            let t_col = self.col;
+            match self.peek() {
+                None => {break;}
+                Some('"') => {
+                    toks.push(match self.lex_string_lit() {
+                        Err(e) => {return Err(e);}
+                        Ok(t) => ExprToken { kind: ExprTokenKind::StringLit(t), line: t_line, col: t_col }
+                    });
+                }
+                Some(c) if c.is_numeric() => {
+                    toks.push(ExprToken { kind: ExprTokenKind::NumLit(self.lex_num_lit()), line: t_line, col: t_col });
+                }
+                Some(c) if c.is_whitespace() => {
+                    self.advance();
+                }
+                Some('+') => {
+                    toks.push(ExprToken { kind: ExprTokenKind::Add, line: t_line, col: t_col });
+                    self.advance();
+                }
+                Some('-') => {
+                    toks.push(ExprToken { kind: ExprTokenKind::Subtract, line: t_line, col: t_col });
+                    self.advance();
+                }
+                Some('/') => {
+                    toks.push(ExprToken { kind: ExprTokenKind::Divide, line: t_line, col: t_col });
+                    self.advance();
+                }
+                Some('*') => {
+                    toks.push(ExprToken { kind: ExprTokenKind::Multiply, line: t_line, col: t_col });
+                    self.advance();
+                }
+                Some(c) if c.is_alphabetic() => {
+                    toks.push(ExprToken { kind: ExprTokenKind::Identifier(self.lex_identifier()), line: t_line, col: t_col });
+                }
+                Some('[') => {
+                    toks.push(ExprToken { kind: ExprTokenKind::Index(match self.lex_index() {
+                        Err(e) => {return Err(e);}
+                        Ok(t) => t
+                    }), line: t_line, col: t_col });
                 }
                 Some('.') => {
-                    point = 0;
-                }
-                Some(_) => {
                     self.advance();
-                    break;
+                    toks.push(ExprToken { kind: ExprTokenKind::Entry(self.lex_identifier()), line: t_line, col: t_col });
                 }
-            };
-            self.advance();
-        };
-        let ten: f64 = 10.;
-        num as f64 / ten.powi(point)
-    }
-    fn lex_var(&mut self, scope: VarScope) -> Result<Expr, LexError> {
-        let m_line = self.line;
-        let m_col = self.col;
-        self.advance();
-        match self.peek() {
-            None => {return Err(LexError { msg: "arguments are never closed".to_string(), line: m_line, col: m_col });}
-            Some('"') => {
-                return Ok(Expr::Var(scope, match self.lex_string() {
-                    Ok(t) => t,
-                    Err(e) => {return Err(e);}
-                }));
-            }
-            Some(_) => {
-                let mut name = String::new();
-                while matches!(self.peek(), Some(c) if c.is_alphabetic() || c =='_') {
-                    name.push(match self.advance() {
-                        None => {return Err(LexError { msg: "arguments are never closed".to_string(), line: m_line, col: m_col });}
-                        Some(c) => c
-                    });
-                };
-                return Ok(Expr::Var(scope, name));
-            }
-        };
-    }
-    fn lex_loc(&mut self) -> Result<Expr, LexError> {
-        let m_line = self.line;
-        let m_col = self.col;
-        self.advance();
-        let mut axis = [0.; 5];
-        let mut index = 0;
-        loop {
-            match self.peek() {
-                None => {return Err(LexError { msg: "unconcluded location".to_string(), line: m_line, col: m_col });}
-                Some(']') => {break ;}
-                Some(c) if c.is_numeric() => {
-                    axis[index] = self.lex_number();
-                    self.advance();
-                    index += 1;
-                    if index<4 {
-                        return Err(LexError { msg: "locations only have 5 values".to_string(), line: m_line, col: m_col });
-                    }
-                }
-                Some(_) => {self.advance();}
+
+                Some(_) => {break;}
             };
         };
-        Ok(Expr::Loc(axis[0], axis[1], axis[2], axis[3], axis[4]))
-    }
-    fn lex_vec(&mut self) -> Result<Expr, LexError> {
-        let m_line = self.line;
-        let m_col = self.col;
-        self.advance();
-        let mut axis = [0.; 3];
-        let mut index = 0;
-        loop {
-            match self.peek() {
-                None => {return Err(LexError { msg: "unconcluded location".to_string(), line: m_line, col: m_col });}
-                Some('>') => {break;}
-                Some(c) if c.is_numeric() => {
-                    axis[index] = self.lex_number();
-                    self.advance();
-                    index += 1;
-                    if index<2 {
-                        return Err(LexError { msg: "vectors only have 3 values".to_string(), line: m_line, col: m_col });
-                    }
-                }
-                Some(_) => {self.advance();}
-            };
-        };
-        Ok(Expr::Vect(axis[0], axis[1], axis[2]))
+        Ok(toks)
     }
 }
