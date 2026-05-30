@@ -435,7 +435,7 @@ impl Lexer {
         loop {
             match self.peek() {
                 None => {break;}
-                Some(c) if c.is_alphabetic() => {
+                Some(c) if c.is_alphabetic() || c=='_' => {
                     o.push(c);
                     self.advance();
                 }
