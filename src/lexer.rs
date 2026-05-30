@@ -1,4 +1,4 @@
-use crate::lexer::TokenKind::{Identifier, Index};
+
 
 pub struct Lexer {
     source: Vec<char>,
@@ -7,19 +7,19 @@ pub struct Lexer {
     col: usize
 }
 
-pub enum TokenKind {
-    Identifier(String),
+pub enum AssignType {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Call
+}
 
-    Assign,
-    AddAssign,
-    SubAssign,
-    MultAssign,
-    DivAssign,
+pub enum LTokenKind {
+    Identifier(String),
     
     Index(Vec<ExprToken>),
     Entry(String),
-
-    Call(Vec<Token>),
 
     Extension(String),
 }
@@ -38,7 +38,7 @@ pub enum ExprTokenKind {
     Index(Vec<ExprToken>),
     Entry(String),
 
-    Call(Vec<Token>),
+    Call(Vec<ExprToken>),
 
     Extension(String),
 }
@@ -49,8 +49,15 @@ pub struct ExprToken {
     col: usize,
 }
 
-pub struct Token {
-    kind: TokenKind,
+pub struct LToken {
+    kind: LTokenKind,
+    line: usize,
+    col: usize
+}
+
+pub struct LexStmt {
+    to: Vec<LToken>,
+    expr: Vec<ExprToken>,
     line: usize,
     col: usize,
 }
@@ -87,7 +94,7 @@ pub struct FunctionParam {
 }
 
 pub struct Function {
-    toks: Vec<Token>,
+    stmts: Vec<LexStmt>,
     args: Vec<FunctionParam>,
     name: String,
     line: usize,
@@ -105,7 +112,7 @@ pub struct Struct {
 
 pub struct Lexed {
     structs: Vec<Struct>,
-    funcs: Vec<Vec<Token>>
+    funcs: Vec<Function>
 }
 
 pub struct LexError {
@@ -139,18 +146,16 @@ impl Lexer {
     }
     pub fn main(&mut self) -> Result<Lexed, LexError> {
         let mut structs: Vec<Struct> = Vec::new();
-        let mut funcs: Vec<Vec<Token>> = Vec::new();
+        let mut funcs: Vec<Function> = Vec::new();
 
         loop {
             let mut ident = String::new();
             loop {
                 match self.peek() {
                     None => {return Ok(Lexed { structs, funcs });},
-                    Some(c) => {
-                        if c.is_whitespace() {
-                            break;
-                        }
-                    }
+                    Some(c) if c.is_whitespace() => {}
+                    Some(c) if c.is_alphabetic() => {break;}
+                    Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character".to_string() });}
                 };
                 self.advance();
             };
@@ -161,17 +166,24 @@ impl Lexer {
             loop {
                 match self.peek() {
                     None => {return Err(LexError { line: m_line, col: m_col, message: "Unconcluded Identifier or block declaration".to_string() });}
-                    Some(c) => {
-                        if c.is_whitespace() {
-                            break;
-                        }
+                    Some(c) if c.is_alphabetic() => {
+                        ident.push(c);
                     }
+                    Some(c) if c.is_whitespace() => {break;}
+                    Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character".to_string() });}
                 };
-                ident.push(self.peek().unwrap());
                 self.advance();
             }
 
-            match ident {
+            match ident.as_str() {
+                "fn" => {
+                    funcs.push(match self.lex_function() {
+                        Ok(f) => f,
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    });
+                }
                 _ => {return Err(LexError { line: m_line, col: m_col, message: "Unrecognized identifier".to_string() });}
             };
         };
@@ -179,19 +191,18 @@ impl Lexer {
     fn lex_function(&mut self) -> Result<Function, LexError> {
         while match self.peek() {
             None => {return Err(LexError { line: self.line, col: self.col, message: "Expected something after `fn`".to_string() });}
-            Some(c) => c.is_alphabetic()
+            Some(c) => c.is_whitespace()
         } {
             self.advance();
         };
 
-        let mut name = String::new();
-        while match self.peek() {
-            None => {return Err(LexError { line: self.line, col: self.col, message: "Expected a function definition".to_string() });}
-            Some(c) => c.is_alphabetic()
-        } {
-            name.push(self.peek().unwrap());
-            self.advance();
+        match self.peek() {
+            None => {return Err(LexError { line: self.line, col: self.col, message: "Expected something after `fn`".to_string() });}
+            Some(c) if c.is_alphabetic() || c=='_' => {}
+            Some(_) => {return Err(LexError { line: self.line, col: self.col, message: "Unexpected character after `fn`".to_string() });}
         };
+
+        let name = self.lex_identifier();
 
         match self.peek() {
             None => {return Err(LexError { line: self.line, col: self.col, message: "Expected opening parenthesis".to_string() });}
@@ -293,21 +304,32 @@ impl Lexer {
             };
         };
         self.advance();
-        let mut toks: Vec<Token> = Vec::new();
+        let mut stmts: Vec<LexStmt> = Vec::new();
         loop {
+            while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+                self.advance();
+            };
             let t_line = self.line;
             let t_col = self.col;
+            let mut l_toks: Vec<LToken> = Vec::new();
+            let mut r_toks: Vec<ExprToken> = Vec::new();
             match self.peek() {
                 None => {return Err(LexError { line: self.line, col: self.col, message: "Unconcluded function".to_string() });}
                 Some(c) if c.is_whitespace() => {self.advance();}
                 Some(c) if c.is_alphabetic() => {
-                    toks.push(Token { kind: Identifier(self.lex_identifier()), line: t_line, col: t_col });
+                    let mut ident = self.lex_identifier();
+                    match ident {
+                        
+                        c => {
+                            l_toks.push(LToken { kind: LTokenKind::Identifier(c), line: t_line, col: t_col });
+                        }
+                    };
                 }
                 Some('[') => {
-                    toks.push(Token { kind: Index(match self.lex_index() {
+                    l_toks.push(match self.lex_index() {
+                        Ok(t) => LToken { kind: LTokenKind::Index(t), line: t_line, col: t_col },
                         Err(e) => {return Err(e);}
-                        Ok(t) => t
-                    }), line: t_line, col: t_col });
+                    });
                 }
 
                 Some(_) => {
